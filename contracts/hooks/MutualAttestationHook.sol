@@ -209,7 +209,7 @@ contract MutualAttestationHook is BaseACPHook, ReentrancyGuard {
         string calldata comment,
         bool isClientReview
     ) internal returns (bytes32) {
-        return attestationService.attest(
+        try attestationService.attest(
             IAttestationService.AttestationRequest({
                 schema: schemaUID,
                 data: IAttestationService.AttestationRequestData({
@@ -228,6 +228,10 @@ contract MutualAttestationHook is BaseACPHook, ReentrancyGuard {
                     value: 0
                 })
             })
-        );
+        ) returns (bytes32 uid) {
+            return uid;
+        } catch {
+            return bytes32(0);
+        }
     }
 }

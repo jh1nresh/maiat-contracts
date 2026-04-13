@@ -48,7 +48,7 @@ contract TokenSafetyHook is IACPHook, OwnableUpgradeable {
     //////////////////////////////////////////////////////////////*/
 
     /// @dev Well-known selector from AgenticCommerce
-    bytes4 public constant FUND_SEL = bytes4(keccak256("fund(uint256,bytes)"));
+    bytes4 public constant FUND_SEL = bytes4(keccak256("fund(uint256,uint256,bytes)"));
 
     /// @notice Bitmask position for each verdict
     /// @dev TokenVerdict enum: Safe(0), Honeypot(1), HighTax(2), Unverified(3), Blocked(4)

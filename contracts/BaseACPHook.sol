@@ -46,7 +46,7 @@ abstract contract BaseACPHook is IACPHook {
     // These match AgenticCommerceHooked function selectors.
     bytes4 private constant SEL_SET_PROVIDER = bytes4(keccak256("setProvider(uint256,address,bytes)"));
     bytes4 private constant SEL_SET_BUDGET   = bytes4(keccak256("setBudget(uint256,uint256,bytes)"));
-    bytes4 private constant SEL_FUND         = bytes4(keccak256("fund(uint256,bytes)"));
+    bytes4 private constant SEL_FUND         = bytes4(keccak256("fund(uint256,uint256,bytes)"));
     bytes4 private constant SEL_SUBMIT       = bytes4(keccak256("submit(uint256,bytes32,bytes)"));
     bytes4 private constant SEL_COMPLETE     = bytes4(keccak256("complete(uint256,bytes32,bytes)"));
     bytes4 private constant SEL_REJECT       = bytes4(keccak256("reject(uint256,bytes32,bytes)"));

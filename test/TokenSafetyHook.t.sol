@@ -69,7 +69,7 @@ contract TokenSafetyHookUnitTest is Test {
     address public unverifiedToken = makeAddr("unverifiedToken");
     address public blockedToken = makeAddr("blockedToken");
 
-    bytes4 public constant FUND_SEL = bytes4(keccak256("fund(uint256,bytes)"));
+    bytes4 public constant FUND_SEL = bytes4(keccak256("fund(uint256,uint256,bytes)"));
     bytes4 public constant SUBMIT_SEL = bytes4(keccak256("submit(uint256,bytes32,bytes)"));
 
     // Default blocked: Honeypot | HighTax | Blocked = 0b10110 = 22

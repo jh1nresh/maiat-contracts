@@ -6,6 +6,8 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import "./IACPHook.sol";
 
 /**
@@ -46,10 +48,22 @@ contract AgenticCommerceHooked is AccessControl, ReentrancyGuard {
     uint256 public platformFeeBP; // 10000 = 100%
     address public platformTreasury;
 
+    /// @notice Gateway address whose signature authorises client-initiated settlement
+    address public trustedGateway;
+
+    /// @notice Minimum passRate (0-100) to trigger PASS settlement
+    uint8 public constant PASS_THRESHOLD = 80;
+
+    /// @dev Selector constants for hook routing from closeAndSettle
+    bytes4 private constant SEL_COMPLETE = bytes4(keccak256("complete(uint256,bytes32,bytes)"));
+    bytes4 private constant SEL_REJECT   = bytes4(keccak256("reject(uint256,bytes32,bytes)"));
+
     mapping(uint256 => Job) public jobs;
     uint256 public jobCounter;
 
     event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt, address hook);
+    event JobSettled(uint256 indexed jobId, address indexed client, uint8 passRate, bool passed);
+    event TrustedGatewayUpdated(address indexed newGateway);
     event ProviderSet(uint256 indexed jobId, address indexed provider);
     event BudgetSet(uint256 indexed jobId, uint256 amount);
     event JobFunded(uint256 indexed jobId, address indexed client, uint256 amount);
@@ -68,6 +82,8 @@ contract AgenticCommerceHooked is AccessControl, ReentrancyGuard {
     error ZeroBudget();
     error BudgetMismatch();
     error ProviderNotSet();
+    error TrustedGatewayNotSet();
+    error InvalidGatewaySignature();
 
     constructor(address paymentToken_, address treasury_) {
         if (paymentToken_ == address(0) || treasury_ == address(0)) revert ZeroAddress();
@@ -94,7 +110,7 @@ contract AgenticCommerceHooked is AccessControl, ReentrancyGuard {
 
     function _afterHook(address hook, uint256 jobId, bytes4 selector, bytes memory data) internal {
         if (hook != address(0)) {
-            IACPHook(hook).afterAction{gas: HOOK_GAS_LIMIT}(jobId, selector, data);
+            try IACPHook(hook).afterAction{gas: HOOK_GAS_LIMIT}(jobId, selector, data) {} catch {}
         }
     }
 
@@ -237,6 +253,76 @@ contract AgenticCommerceHooked is AccessControl, ReentrancyGuard {
             emit Refunded(jobId, job.client, job.budget);
         }
         emit JobExpired(jobId);
+    }
+
+    /// @notice Set the trusted gateway address for closeAndSettle signature verification.
+    function setTrustedGateway(address gateway_) external onlyRole(ADMIN_ROLE) {
+        trustedGateway = gateway_;
+        emit TrustedGatewayUpdated(gateway_);
+    }
+
+    /**
+     * @notice Client-initiated settlement using a gateway-signed evaluation proof.
+     *         Bypasses the evaluator role — the client submits and settles in one step.
+     *         Intended for agent/human direct settlement after session close.
+     *
+     * @param jobId              The funded job to settle
+     * @param finalScore         Aggregate evaluation score (0-100)
+     * @param callCount          Number of skill calls in the session
+     * @param passRate           Session pass rate (0-100); >= PASS_THRESHOLD → PASS
+     * @param gatewaySignature   ECDSA sig from trustedGateway over
+     *                           keccak256(abi.encodePacked(jobId, finalScore, callCount, passRate))
+     *
+     * Hook data forwarded to afterAction:
+     *   reason    = bytes32(uint256(passRate))         — embeds passRate into BAS attestation
+     *   optParams = abi.encode(passRate, callCount, finalScore) — for TrustUpdateHook
+     */
+    function closeAndSettle(
+        uint256 jobId,
+        uint8 finalScore,
+        uint16 callCount,
+        uint8 passRate,
+        bytes calldata gatewaySignature
+    ) external nonReentrant {
+        Job storage job = jobs[jobId];
+        if (job.id == 0) revert InvalidJob();
+        if (job.status != JobStatus.Funded) revert WrongStatus();
+        if (msg.sender != job.client) revert Unauthorized();
+        if (trustedGateway == address(0)) revert TrustedGatewayNotSet();
+
+        // Verify gateway ECDSA signature
+        bytes32 digest = keccak256(abi.encodePacked(block.chainid, address(this), jobId, finalScore, callCount, passRate));
+        bytes32 ethHash = MessageHashUtils.toEthSignedMessageHash(digest);
+        address signer = ECDSA.recover(ethHash, gatewaySignature);
+        if (signer != trustedGateway) revert InvalidGatewaySignature();
+
+        bool passed = passRate >= PASS_THRESHOLD;
+
+        // Hook data: (reason, optParams) matching BaseACPHook decode format for complete/reject
+        bytes32 reason = bytes32(uint256(passRate));
+        bytes memory optParams = abi.encode(passRate, callCount, finalScore);
+        bytes memory hookData = abi.encode(reason, optParams);
+        bytes4 hookSel = passed ? SEL_COMPLETE : SEL_REJECT;
+
+        uint256 budget = job.budget;
+
+        if (passed) {
+            job.status = JobStatus.Completed;
+            uint256 fee = (budget * platformFeeBP) / 10000;
+            uint256 net = budget - fee;
+            if (fee > 0) paymentToken.safeTransfer(platformTreasury, fee);
+            if (net > 0) paymentToken.safeTransfer(job.provider, net);
+            emit JobCompleted(jobId, msg.sender, reason);
+            emit PaymentReleased(jobId, job.provider, net);
+        } else {
+            job.status = JobStatus.Rejected;
+            paymentToken.safeTransfer(job.client, budget);
+            emit Refunded(jobId, job.client, budget);
+            emit JobRejected(jobId, msg.sender, reason);
+        }
+
+        emit JobSettled(jobId, msg.sender, passRate, passed);
+        _afterHook(job.hook, jobId, hookSel, hookData);
     }
 
     function getJob(uint256 jobId) external view returns (Job memory) {
